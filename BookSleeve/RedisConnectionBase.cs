@@ -320,7 +320,7 @@ namespace BookSleeve
         /// <summary>
         ///     Attempts to open the connection to the remote server
         /// </summary>
-        public Task Open()
+        public async Task Open()
         {
             int foundState;
             if (
@@ -336,12 +336,12 @@ namespace BookSleeve
                         NoDelay = true,
                         SendTimeout = ioTimeout
                     };
+
                 socket.Connect(host, port);
                 redisStream = new NetworkStream(socket);
                 outBuffer = new BufferedStream(redisStream, 512); // buffer up operations
                 redisStream.ReadTimeout = redisStream.WriteTimeout = ioTimeout;
-
-
+                
                 var thread = new Thread(Outgoing) {IsBackground = true, Name = "Redis:outgoing"};
                 thread.Start();
 
@@ -352,59 +352,64 @@ namespace BookSleeve
                 OnInitConnection();
                 ReadMoreAsync();
 
-                return ContinueWith(info, done =>
-                    {
-                        try
-                        {
-                            // process this when available
-                            Dictionary<string, string> parsed = ParseInfo(done.Result);
-                            string s;
-                            Version version;
-                            if (parsed.TryGetValue("redis_version", out s) && TryParseVersion(s, out version))
-                            {
-                                ServerVersion = version;
-                            }
-                            if (parsed.TryGetValue("redis_mode", out s) && s == "sentinel")
-                            {
-                                ServerType = ServerType.Sentinel;
-                            }
-                            else if (parsed.TryGetValue("role", out s) && s != null)
-                            {
-                                switch (s)
-                                {
-                                    case "master":
-                                        ServerType = ServerType.Master;
-                                        break;
-                                    case "slave":
-                                        ServerType = ServerType.Slave;
-                                        break;
-                                }
-                                if (!string.IsNullOrEmpty(name))
-                                {
-                                    RedisFeatures tmp = Features;
-                                    if (tmp != null && tmp.ClientName)
-                                    {
-                                        ExecuteVoid(
-                                            RedisMessage.Create(-1, RedisLiteral.CLIENT, RedisLiteral.SETNAME, name),
-                                            true);
-                                    }
-                                }
-                            }
-                            Interlocked.CompareExchange(ref state, (int) ConnectionState.Open,
-                                                        (int) ConnectionState.Opening);
-                        }
-                        catch
-                        {
-                            Close(true);
-                            Interlocked.CompareExchange(ref state, (int) ConnectionState.Closed,
-                                                        (int) ConnectionState.Opening);
-                        }
-                    });
+                var result = await info;
+
+                ProcessInfo(result);
+                //return ContinueWith(info, ProcessInfo);
             }
             catch
             {
                 Interlocked.CompareExchange(ref state, (int) ConnectionState.Closed, (int) ConnectionState.Opening);
                 throw;
+            }
+        }
+
+        private void ProcessInfo(string done)
+        {
+            try
+            {
+                // process this when available
+                Dictionary<string, string> parsed = ParseInfo(done);
+                string s;
+                Version version;
+                if (parsed.TryGetValue("redis_version", out s) && TryParseVersion(s, out version))
+                {
+                    ServerVersion = version;
+                }
+                if (parsed.TryGetValue("redis_mode", out s) && s == "sentinel")
+                {
+                    ServerType = ServerType.Sentinel;
+                }
+                else if (parsed.TryGetValue("role", out s) && s != null)
+                {
+                    switch (s)
+                    {
+                        case "master":
+                            ServerType = ServerType.Master;
+                            break;
+                        case "slave":
+                            ServerType = ServerType.Slave;
+                            break;
+                    }
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        RedisFeatures tmp = Features;
+                        if (tmp != null && tmp.ClientName)
+                        {
+                            ExecuteVoid(
+                                RedisMessage.Create(-1, RedisLiteral.CLIENT, RedisLiteral.SETNAME, name),
+                                true);
+                        }
+                    }
+                }
+                Interlocked.CompareExchange(ref state, (int) ConnectionState.Open,
+                                            (int) ConnectionState.Opening);
+            }
+            catch
+            {
+                Close(true);
+                Interlocked.CompareExchange(ref state, (int) ConnectionState.Closed,
+                                            (int) ConnectionState.Opening);
             }
         }
 
@@ -467,6 +472,7 @@ namespace BookSleeve
             NetworkStream tmp = redisStream;
             if (tmp != null)
             {
+                
                 tmp.BeginRead(buffer, 0, BufferSize, readReplyHeader, tmp); // read more IO here (in parallel)
             }
         }
